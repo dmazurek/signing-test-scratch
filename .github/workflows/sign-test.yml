@@ -35,7 +35,8 @@ jobs:
             local br=$1 f=$2 parent blob tree commit
             parent=$(head_of "$br")
             blob=$(gh api "repos/$REPO/git/blobs" -f "content=b $f" -f encoding=utf-8 --jq .sha)
-            tree=$(gh api "repos/$REPO/git/trees" -f "base_tree=$parent" -f "tree[][path]=$f" -f "tree[][mode]=100644" -f "tree[][type]=blob" -f "tree[][sha]=$blob" --jq .sha)
+            jq -n --arg base "$parent" --arg f "$f" --arg blob "$blob" '{base_tree:$base,tree:[{path:$f,mode:"100644",type:"blob",sha:$blob}]}' > /tmp/t.json
+            tree=$(gh api "repos/$REPO/git/trees" --input /tmp/t.json --jq .sha)
             commit=$(gh api "repos/$REPO/git/commits" -f "message=b: git data $f" -f "tree=$tree" -f "parents[]=$parent" --jq .sha)
             gh api -X PATCH "repos/$REPO/git/refs/heads/$br" -f "sha=$commit" >/dev/null
             report "b-rest-gitdata" "$commit"
@@ -77,6 +78,6 @@ jobs:
               method_c "pr1-c" pr1 pr1.txt
               method_c "pr2-c" pr2 pr2.txt
               method_d pr3 pr3.txt
-              for b in pr1 pr2 pr3; do gh pr create --base main --head "$b" --title "test $b" --body "signing test $b"; done
+              for b in pr1 pr2 pr3; do gh pr create --base main --head "$b" --title "test $b" --body "signing test $b" || echo "RESULT pr-create-$b FAILED"; done
               ;;
           esac
