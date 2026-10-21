@@ -73,11 +73,25 @@ jobs:
             main-direct)
               method_c "c-graphql-direct-main" main main-direct.txt
               ;;
+            open-prs)
+              for b in pr1 pr2 pr3; do gh pr create -R "$REPO" --base main --head "$b" --title "test $b" --body "signing test $b" || echo "RESULT pr-create-$b FAILED"; done
+              ;;
+            b-with-author)
+              mkbranch test/b2
+              parent=$(head_of test/b2)
+              blob=$(gh api "repos/$REPO/git/blobs" -f "content=b2" -f encoding=utf-8 --jq .sha)
+              jq -n --arg base "$parent" --arg blob "$blob" '{base_tree:$base,tree:[{path:"b2.txt",mode:"100644",type:"blob",sha:$blob}]}' > /tmp/t.json
+              tree=$(gh api "repos/$REPO/git/trees" --input /tmp/t.json --jq .sha)
+              jq -n --arg tree "$tree" --arg p "$parent" '{message:"b2 with author",tree:$tree,parents:[$p],author:{name:"Someone",email:"someone@example.invalid"},committer:{name:"Someone",email:"someone@example.invalid"}}' > /tmp/k.json
+              commit=$(gh api "repos/$REPO/git/commits" --input /tmp/k.json --jq .sha)
+              gh api -X PATCH "repos/$REPO/git/refs/heads/test/b2" -f "sha=$commit" >/dev/null
+              report "b2-gitdata-with-author" "$commit"
+              ;;
             prs)
               for b in pr1 pr2 pr3; do mkbranch "$b"; done
               method_c "pr1-c" pr1 pr1.txt
               method_c "pr2-c" pr2 pr2.txt
               method_d pr3 pr3.txt
-              for b in pr1 pr2 pr3; do gh pr create --base main --head "$b" --title "test $b" --body "signing test $b" || echo "RESULT pr-create-$b FAILED"; done
+              for b in pr1 pr2 pr3; do gh pr create -R "$REPO" --base main --head "$b" --title "test $b" --body "signing test $b" || echo "RESULT pr-create-$b FAILED"; done
               ;;
           esac
