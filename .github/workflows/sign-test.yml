@@ -1,0 +1,82 @@
+name: sign-test
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "methods | main-direct | prs"
+        required: true
+        default: methods
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          report() { # label sha
+            echo "RESULT $1 sha=$2 $(gh api "repos/$REPO/commits/$2" --jq '"verified=\(.commit.verification.verified) reason=\(.commit.verification.reason) committer=\(.commit.committer.name)"')"
+          }
+          main_sha() { gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha; }
+          mkbranch() { gh api "repos/$REPO/git/refs" -f "ref=refs/heads/$1" -f "sha=$(main_sha)" --jq .object.sha >/dev/null; }
+          head_of() { gh api "repos/$REPO/git/ref/heads/$1" --jq .object.sha; }
+          method_a() { # branch file
+            local out
+            out=$(gh api -X PUT "repos/$REPO/contents/$2" -f "message=a: contents API $2" -f "branch=$1" -f "content=$(printf 'a %s\n' "$2" | base64)")
+            report "a-rest-contents" "$(jq -r .commit.sha <<<"$out")"
+          }
+          method_b() {
+            local br=$1 f=$2 parent blob tree commit
+            parent=$(head_of "$br")
+            blob=$(gh api "repos/$REPO/git/blobs" -f "content=b $f" -f encoding=utf-8 --jq .sha)
+            tree=$(gh api "repos/$REPO/git/trees" -f "base_tree=$parent" -f "tree[][path]=$f" -f "tree[][mode]=100644" -f "tree[][type]=blob" -f "tree[][sha]=$blob" --jq .sha)
+            commit=$(gh api "repos/$REPO/git/commits" -f "message=b: git data $f" -f "tree=$tree" -f "parents[]=$parent" --jq .sha)
+            gh api -X PATCH "repos/$REPO/git/refs/heads/$br" -f "sha=$commit" >/dev/null
+            report "b-rest-gitdata" "$commit"
+          }
+          method_c() { # label branch file  (graphql createCommitOnBranch)
+            local label=$1 br=$2 f=$3 oid
+            oid=$(head_of "$br")
+            jq -n --arg repo "$REPO" --arg br "$br" --arg oid "$oid" --arg f "$f" --arg c "$(printf 'c %s\n' "$f" | base64)" \
+              '{query:"mutation($i:CreateCommitOnBranchInput!){createCommitOnBranch(input:$i){commit{oid}}}",variables:{i:{branch:{repositoryNameWithOwner:$repo,branchName:$br},message:{headline:("c: graphql " + $f)},expectedHeadOid:$oid,fileChanges:{additions:[{path:$f,contents:$c}]}}}}' > /tmp/c.json
+            local out; out=$(gh api graphql --input /tmp/c.json || true)
+            echo "RAW $label $out"
+            local sha; sha=$(jq -r '.data.createCommitOnBranch.commit.oid // empty' <<<"$out")
+            if [ -n "$sha" ]; then report "$label" "$sha"; else echo "RESULT $label FAILED"; fi
+          }
+          method_d() { # branch file
+            local d; d=$(mktemp -d); cd "$d"
+            git clone -q "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" r && cd r
+            git config user.name "sign-test-runner"; git config user.email "runner@example.invalid"
+            git config commit.gpgsign false
+            git fetch -q origin "$1" && git checkout -q "$1"
+            echo "d $2" > "$2"; git add "$2"; git commit -q -m "d: runner git push $2"
+            git push -q origin "$1"
+            report "d-runner-git-push" "$(git rev-parse HEAD)"
+            cd /
+          }
+          case "$MODE" in
+            methods)
+              mkbranch test/api
+              method_a test/api a.txt
+              method_b test/api b.txt
+              method_c "c-graphql" test/api c.txt
+              method_d test/api d.txt
+              ;;
+            main-direct)
+              method_c "c-graphql-direct-main" main main-direct.txt
+              ;;
+            prs)
+              for b in pr1 pr2 pr3; do mkbranch "$b"; done
+              method_c "pr1-c" pr1 pr1.txt
+              method_c "pr2-c" pr2 pr2.txt
+              method_d pr3 pr3.txt
+              for b in pr1 pr2 pr3; do gh pr create --base main --head "$b" --title "test $b" --body "signing test $b"; done
+              ;;
+          esac
