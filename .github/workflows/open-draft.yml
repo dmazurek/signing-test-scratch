@@ -1,0 +1,31 @@
+name: open-draft
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  open:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create branch, commit via GraphQL, open draft PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          BR="rfr-test-${RUN_ID}"
+          BASE_SHA=$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)
+          gh api "repos/$REPO/git/refs" -f ref="refs/heads/$BR" -f sha="$BASE_SHA" >/dev/null
+          CONTENT=$(printf 'rfr test %s\n' "$RUN_ID" | base64 -w0)
+          gh api graphql \
+            -f query='mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}' \
+            -F input[branch][repositoryNameWithOwner]="$REPO" \
+            -F input[branch][branchName]="$BR" \
+            -F input[message][headline]="rfr test commit $RUN_ID" \
+            -F input[expectedHeadOid]="$BASE_SHA" \
+            -F input[fileChanges][additions][][path]="rfr-$RUN_ID.txt" \
+            -F input[fileChanges][additions][][contents]="$CONTENT"
+          gh pr create --repo "$REPO" --draft --base main --head "$BR" \
+            --title "rfr test $RUN_ID" --body "Draft opened by GITHUB_TOKEN"
