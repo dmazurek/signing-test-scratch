@@ -1,0 +1,30 @@
+name: push-commit
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        required: true
+permissions:
+  contents: write
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add commit via GraphQL
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BR: ${{ inputs.branch }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          HEAD=$(gh api "repos/$REPO/git/ref/heads/$BR" --jq .object.sha)
+          CONTENT=$(printf 'sync %s\n' "$RUN_ID" | base64 -w0)
+          gh api graphql \
+            -f query='mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}' \
+            -F input[branch][repositoryNameWithOwner]="$REPO" \
+            -F input[branch][branchName]="$BR" \
+            -F input[message][headline]="sync commit $RUN_ID" \
+            -F input[expectedHeadOid]="$HEAD" \
+            -F input[fileChanges][additions][][path]="sync-$RUN_ID.txt" \
+            -F input[fileChanges][additions][][contents]="$CONTENT"
